@@ -158,6 +158,8 @@ public:
   const Network::FilterChain*
   findFilterChain(uint16_t destination_port, bool expect_destination_port_match,
                   const std::string& destination_address, bool expect_destination_address_match,
+                  uint16_t source_port, bool expect_source_port_match,
+                  const std::string& _address, bool expect_source_address_match,
                   const std::string& server_name, bool expect_server_name_match,
                   const std::string& transport_protocol, bool expect_transport_protocol_match,
                   const std::vector<std::string>& application_protocols,
@@ -1414,6 +1416,52 @@ TEST_F(ListenerManagerImplWithRealFiltersTest, SingleFilterChainWithDestinationI
   EXPECT_EQ(filter_chain, nullptr);
 }
 
+TEST_F(ListenerManagerImplWithRealFiltersTest, SingleFilterChainWithSourceIPMatch) {
+const std::string yaml = TestEnvironment::substitute(R"EOF(
+    address:
+      socket_address: { address: 127.0.0.1, port_value: 1234 }
+    listener_filters:
+    - name: "envoy.listener.tls_inspector"
+      config: {}
+    filter_chains:
+    - filter_chain_match:
+        source_prefix_ranges: { address_prefix: 127.0.0.0, prefix_len: 8 }
+      tls_context:
+        common_tls_context:
+          tls_certificates:
+            - certificate_chain: { filename: "{{ test_rundir }}/test/extensions/transport_sockets/tls/test_data/san_dns_cert.pem" }
+              private_key: { filename: "{{ test_rundir }}/test/extensions/transport_sockets/tls/test_data/san_dns_key.pem" }
+  )EOF",
+                                                     Network::Address::IpVersion::v4);
+
+EXPECT_CALL(server_.random_, uuid());
+EXPECT_CALL(listener_factory_, createListenSocket(_, _, _, true));
+manager_->addOrUpdateListener(parseListenerFromV2Yaml(yaml), "", true);
+EXPECT_EQ(1U, manager_->listeners().size());
+
+// IPv4 client connects to unknown IP - no match.
+auto filter_chain = findFilterChain(1234, true, "1.2.3.4", false, "", false, "tls", false, {},
+                                    false, "8.8.8.8", false, false);
+EXPECT_EQ(filter_chain, nullptr);
+
+// IPv4 client connects to valid IP - using 1st filter chain.
+filter_chain = findFilterChain(1234, true, "127.0.0.1", true, "", true, "tls", true, {}, true,
+                               "8.8.8.8", false, true);
+ASSERT_NE(filter_chain, nullptr);
+EXPECT_TRUE(filter_chain->transportSocketFactory().implementsSecureTransport());
+auto transport_socket = filter_chain->transportSocketFactory().createTransportSocket(nullptr);
+auto ssl_socket =
+        dynamic_cast<Extensions::TransportSockets::Tls::SslSocket*>(transport_socket.get());
+auto server_names = ssl_socket->dnsSansLocalCertificate();
+EXPECT_EQ(server_names.size(), 1);
+EXPECT_EQ(server_names.front(), "server1.example.com");
+
+// UDS client - no match.
+filter_chain = findFilterChain(0, true, "/tmp/test.sock", false, "", false, "tls", false, {},
+                               false, "/tmp/test.sock", false, false);
+EXPECT_EQ(filter_chain, nullptr);
+}
+
 TEST_F(ListenerManagerImplWithRealFiltersTest, SingleFilterChainWithServerNamesMatch) {
   const std::string yaml = TestEnvironment::substitute(R"EOF(
     address:
@@ -2154,6 +2202,23 @@ TEST_F(ListenerManagerImplWithRealFiltersTest, SingleFilterChainWithInvalidDesti
     filter_chains:
     - filter_chain_match:
         prefix_ranges: { address_prefix: a.b.c.d, prefix_len: 32 }
+  )EOF",
+                                                       Network::Address::IpVersion::v4);
+
+  EXPECT_THROW_WITH_MESSAGE(manager_->addOrUpdateListener(parseListenerFromV2Yaml(yaml), "", true),
+                            EnvoyException, "malformed IP address: a.b.c.d");
+}
+
+TEST_F(ListenerManagerImplWithRealFiltersTest, SingleFilterChainWithInvalidSourceIPMatch) {
+  const std::string yaml = TestEnvironment::substitute(R"EOF(
+    address:
+      socket_address: { address: 127.0.0.1, port_value: 1234 }
+    listener_filters:
+    - name: "envoy.listener.tls_inspector"
+      config: {}
+    filter_chains:
+    - filter_chain_match:
+        source_prefix_ranges: { address_prefix: a.b.c.d, prefix_len: 32 }
   )EOF",
                                                        Network::Address::IpVersion::v4);
 

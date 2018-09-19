@@ -115,7 +115,7 @@ message FilterChainMatch {
   // is contained in at least one of the specified ports. If the parameter is
   // not specified, the source port is ignored.
   // [#not-implemented-hide:]
-  repeated google.protobuf.UInt32Value source_ports = 7;
+  google.protobuf.UInt32Value source_port = 7 [(validate.rules).uint32 = {gte: 1, lte: 65535}];
 
   // If non-empty, a list of server names (e.g. SNI for TLS protocol) to consider when determining
   // a filter chain match. Those values will be compared against the server names of a new

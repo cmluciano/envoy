@@ -326,20 +326,24 @@ private:
   // between exact and wildcard entries.
   typedef std::unordered_map<std::string, TransportProtocolsMap> ServerNamesMap;
   typedef std::unordered_map<std::string, ServerNamesMap> DestinationIPsMap;
+  typedef std::unordered_map<std::string, ServerNamesMap> SourceIPsMap;
   typedef std::shared_ptr<ServerNamesMap> ServerNamesMapSharedPtr;
   typedef Network::LcTrie::LcTrie<ServerNamesMapSharedPtr> DestinationIPsTrie;
   typedef std::unique_ptr<DestinationIPsTrie> DestinationIPsTriePtr;
   typedef std::unordered_map<uint16_t, std::pair<DestinationIPsMap, DestinationIPsTriePtr>>
       DestinationPortsMap;
+  typedef Network::LcTrie::LcTrie<ServerNamesMapSharedPtr> SourceIPsTrie;
+  typedef std::unique_ptr<SourceIPsTrie> SourceIPsTriePtr;
+  typedef std::unordered_map<uint16_t, std::pair<SourceIPsMap, SourceIPsTriePtr>> SourcePortsMap;
 
-  void
-  addFilterChain(uint16_t destination_port, const std::vector<std::string>& destination_ips,
-                 const std::vector<std::string>& server_names,
-                 const std::string& transport_protocol,
-                 const std::vector<std::string>& application_protocols,
-                 const envoy::api::v2::listener::FilterChainMatch_ConnectionSourceType source_type,
-                 Network::TransportSocketFactoryPtr&& transport_socket_factory,
-                 std::vector<Network::FilterFactoryCb> filters_factory);
+  void addFilterChain(uint16_t destination_port, const std::vector<std::string>& destination_ips,
+       //uint16_t source_port, const std::vector<std::string>& source_ips,
+       const std::vector<std::string>& server_names,
+       const std::string& transport_protocol,
+       const std::vector<std::string>& application_protocols,
+       const envoy::api::v2::listener::FilterChainMatch_ConnectionSourceType source_type,
+       Network::TransportSocketFactoryPtr&& transport_socket_factory,
+       std::vector<Network::FilterFactoryCb> filters_factory);
   void addFilterChainForDestinationPorts(
       DestinationPortsMap& destination_ports_map, uint16_t destination_port,
       const std::vector<std::string>& destination_ips, const std::vector<std::string>& server_names,
@@ -366,12 +370,30 @@ private:
       SourceTypesArray& source_types_array,
       const envoy::api::v2::listener::FilterChainMatch_ConnectionSourceType source_type,
       const Network::FilterChainSharedPtr& filter_chain);
+  void addFilterChainForSourcePorts(SourcePortsMap& source_ports_map, uint16_t source_port,
+      const std::vector<std::string>& source_ips,
+      const std::vector<std::string>& server_names,
+      const std::string& transport_protocol,
+      const std::vector<std::string>& application_protocols,
+      const envoy::api::v2::listener::FilterChainMatch_ConnectionSourceType source_type,
+      const Network::FilterChainSharedPtr& filter_chain);
+  void addFilterChainForSourceIPs(SourceIPsMap& source_ips_map,
+      const std::vector<std::string>& source_ips,
+      const std::vector<std::string>& server_names,
+      const std::string& transport_protocol,
+      const std::vector<std::string>& application_protocols,
+      const envoy::api::v2::listener::FilterChainMatch_ConnectionSourceType source_type,
+      const Network::FilterChainSharedPtr& filter_chain);
 
   void convertDestinationIPsMapToTrie();
+  void convertSourceIPsMapToTrie();
 
   const Network::FilterChain*
   findFilterChainForDestinationIP(const DestinationIPsTrie& destination_ips_trie,
                                   const Network::ConnectionSocket& socket) const;
+  const Network::FilterChain*
+  findFilterChainForSourceIP(const SourceIPsTrie& source_ips_trie,
+                             const Network::ConnectionSocket& socket) const;
   const Network::FilterChain*
   findFilterChainForServerName(const ServerNamesMap& server_names_map,
                                const Network::ConnectionSocket& socket) const;
@@ -390,6 +412,9 @@ private:
   // Mapping of FilterChain's configured destination ports, IPs, server names, transport protocols
   // and application protocols, using structures defined above.
   DestinationPortsMap destination_ports_map_;
+  // Mapping of FilterChain's configured source ports, IPs, server names, transport protocols
+  // and application protocols, using structures defined above.
+  SourcePortsMap source_ports_map_;
 
   ListenerManagerImpl& parent_;
   Network::Address::InstanceConstSharedPtr address_;
