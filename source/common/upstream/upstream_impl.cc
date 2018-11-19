@@ -82,6 +82,14 @@ Network::TcpKeepaliveConfig parseTcpKeepaliveConfig(const envoy::api::v2::Cluste
       PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, keepalive_interval, absl::optional<uint32_t>())};
 }
 
+Network::UdpBufferConfig parseUdpBufferConfig(const envoy::api::v2::Cluster& config) {
+  const envoy::api::v2::core::UdpBufferConfig& options =
+      config.upstream_connection_options().udp_buffer();
+  return Network::UdpBufferConfig{
+      PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, snd_buffer_size, absl::optional<uint32_t>()),
+      PROTOBUF_GET_WRAPPED_OR_DEFAULT(options, rcv_buffer_size, absl::optional<uint32_t>())};
+}
+
 const Network::ConnectionSocket::OptionsSharedPtr
 parseClusterSocketOptions(const envoy::api::v2::Cluster& config,
                           const envoy::api::v2::core::BindConfig bind_config) {
@@ -97,6 +105,11 @@ parseClusterSocketOptions(const envoy::api::v2::Cluster& config,
     Network::Socket::appendOptions(
         cluster_options,
         Network::SocketOptionFactory::buildTcpKeepaliveOptions(parseTcpKeepaliveConfig(config)));
+  }
+  if (config.upstream_connection_options().has_tcp_keepalive()) {
+    Network::Socket::appendOptions(
+        cluster_options,
+        Network::SocketOptionFactory::buildUdpBufferOptions(parseUdpBufferConfig(config)));
   }
   // Cluster socket_options trump cluster manager wide.
   if (bind_config.socket_options().size() + config.upstream_bind_config().socket_options().size() >

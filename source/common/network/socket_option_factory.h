@@ -23,6 +23,11 @@ struct TcpKeepaliveConfig {
   absl::optional<uint32_t> keepalive_interval_; // Interval between probes, in ms
 };
 
+struct UdpBufferConfig {
+  absl::optional<uint32_t> snd_buffer_size_;
+  absl::optional<uint32_t> rcv_buffer_size_;
+};
+
 class SocketOptionFactory : Logger::Loggable<Logger::Id::connection> {
 public:
   static std::unique_ptr<Socket::Options>
@@ -32,6 +37,7 @@ public:
   static std::unique_ptr<Socket::Options> buildTcpFastOpenOptions(uint32_t queue_length);
   static std::unique_ptr<Socket::Options> buildLiteralOptions(
       const Protobuf::RepeatedPtrField<envoy::api::v2::core::SocketOption>& socket_options);
+  buildUdpBufferOptions(Network::UdpBufferConfig buffer_config);
 };
 } // namespace Network
 } // namespace Envoy

@@ -85,5 +85,24 @@ SocketOptionFactory::buildTcpFastOpenOptions(uint32_t queue_length) {
   return options;
 }
 
+std::unique_ptr<Socket::Options>
+SocketOptionFactory::buildUdpBufferOptions(Network::UdpBufferConfig buffer_config) {
+  std::unique_ptr<Socket::Options> options = absl::make_unique<Socket::Options>();
+  options->push_back(std::make_shared<Network::SocketOptionImpl>(
+      envoy::api::v2::core::SocketOption::STATE_PREBIND, ENVOY_SOCKET_SO_BUFFER, 1));
+
+  if (buffer_config.snd_buffer_size_.has_value()) {
+    options->push_back(std::make_shared<Network::SocketOptionImpl>(
+        envoy::api::v2::core::SocketOption::STATE_PREBIND, ENVOY_SOCKET_SND_BUFFER,
+        buffer_config.snd_buffer_size_.value()));
+  }
+  if (buffer_config.rcv_buffer_size_.has_value()) {
+    options->push_back(std::make_shared<Network::SocketOptionImpl>(
+        envoy::api::v2::core::SocketOption::STATE_PREBIND, ENVOY_SOCKET_RCV_BUFFER,
+        buffer_config.rcv_buffer_size_.value()));
+  }
+  return options;
+}
+
 } // namespace Network
 } // namespace Envoy
