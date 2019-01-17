@@ -1,4 +1,4 @@
-FROM ubuntu:xenial
+FROM ubuntu:bionic
 
 COPY ./build_and_install_deps.sh ./recipe_wrapper.sh ./Makefile ./build_container_common.sh /
 COPY WORKSPACE /bazel-prebuilt/

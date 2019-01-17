@@ -9,7 +9,7 @@ apt-get install -y wget software-properties-common make cmake git python python-
   bc libtool ninja-build automake zip time golang g++ gdb strace wireshark tshark tcpdump
 # clang 7.
 wget -O - http://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add -
-apt-add-repository "deb http://apt.llvm.org/xenial/ llvm-toolchain-xenial-7 main"
+apt-add-repository "deb http://apt.llvm.org/bionic/ llvm-toolchain-bionic-7 main"
 apt-get update
 apt-get install -y clang-7 clang-format-7 clang-tidy-7 lld-7 libc++-7-dev libc++abi-7-dev
 # Bazel and related dependencies.
@@ -29,5 +29,5 @@ setcap cap_net_raw,cap_net_admin=eip /usr/sbin/tcpdump
 # virtualenv
 pip install virtualenv
 
-EXPECTED_CXX_VERSION="g++ (Ubuntu 5.4.0-6ubuntu1~16.04.11) 5.4.0 20160609" ./build_container_common.sh
+EXPECTED_CXX_VERSION="g++ (Ubuntu 7.3.0-27ubuntu1~18.04) 7.3.0" ./build_container_common.sh
 
