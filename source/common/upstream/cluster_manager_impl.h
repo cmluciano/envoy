@@ -204,6 +204,9 @@ public:
   Host::CreateConnectionData
   tcpConnForCluster(const std::string& cluster, LoadBalancerContext* context,
                     Network::TransportSocketOptionsSharedPtr transport_socket_options) override;
+  Host::CreateConnectionData
+  udpConnForCluster(const std::string& cluster, LoadBalancerContext* context,
+                    Network::TransportSocketOptionsSharedPtr transport_socket_options) override;
   Http::AsyncClient& httpAsyncClientForCluster(const std::string& cluster) override;
   bool removeCluster(const std::string& cluster) override;
   void shutdown() override {
@@ -290,6 +293,34 @@ private:
     using TcpConnectionsMap =
         std::unordered_map<Network::ClientConnection*, std::unique_ptr<TcpConnContainer>>;
 
+    // Holds an unowned reference to a udp connection, and watches for Closed events. If the
+    // connection
+    // is closed, this container removes itself from the container that owns it.
+    struct UdpConnContainer : public Network::ConnectionCallbacks, public Event::DeferredDeletable {
+    public:
+      UdpConnContainer(ThreadLocalClusterManagerImpl& parent, const HostConstSharedPtr& host,
+                       Network::ClientConnection& connection)
+          : parent_(parent), host_(host), connection_(connection) {
+        connection_.addConnectionCallbacks(*this);
+      }
+
+      // Network::ConnectionCallbacks
+      void onEvent(Network::ConnectionEvent event) override {
+        if (event == Network::ConnectionEvent::LocalClose ||
+            event == Network::ConnectionEvent::RemoteClose) {
+          parent_.removeUdpConn(host_, connection_);
+        }
+      }
+      void onAboveWriteBufferHighWatermark() override {}
+      void onBelowWriteBufferLowWatermark() override {}
+
+      ThreadLocalClusterManagerImpl& parent_;
+      HostConstSharedPtr host_;
+      Network::ClientConnection& connection_;
+    };
+    typedef std::unordered_map<Network::ClientConnection*, std::unique_ptr<UdpConnContainer>>
+        UdpConnectionsMap;
+
     struct ClusterEntry : public ThreadLocalCluster {
       ClusterEntry(ThreadLocalClusterManagerImpl& parent, ClusterInfoConstSharedPtr cluster,
                    const LoadBalancerFactorySharedPtr& lb_factory);
@@ -329,6 +360,7 @@ private:
     void clearContainer(HostSharedPtr old_host, ConnPoolsContainer& container);
     void drainTcpConnPools(HostSharedPtr old_host, TcpConnPoolsContainer& container);
     void removeTcpConn(const HostConstSharedPtr& host, Network::ClientConnection& connection);
+    void removeUdpConn(const HostConstSharedPtr& host, Network::ClientConnection& connection);
     static void removeHosts(const std::string& name, const HostVector& hosts_removed,
                             ThreadLocal::Slot& tls);
     static void updateClusterMembership(const std::string& name, uint32_t priority,
@@ -351,6 +383,7 @@ private:
     std::unordered_map<HostConstSharedPtr, ConnPoolsContainer> host_http_conn_pool_map_;
     std::unordered_map<HostConstSharedPtr, TcpConnPoolsContainer> host_tcp_conn_pool_map_;
     std::unordered_map<HostConstSharedPtr, TcpConnectionsMap> host_tcp_conn_map_;
+    std::unordered_map<HostConstSharedPtr, UdpConnectionsMap> host_udp_conn_map_;
 
     std::list<Envoy::Upstream::ClusterUpdateCallbacks*> update_callbacks_;
     const PrioritySet* local_priority_set_{};

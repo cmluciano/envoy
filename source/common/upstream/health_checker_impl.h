@@ -11,6 +11,7 @@
 #include "common/stream_info/stream_info_impl.h"
 #include "common/upstream/health_checker_base_impl.h"
 
+#include "include/envoy/network/_virtual_includes/listener_interface/envoy/network/listener.h"
 #include "src/proto/grpc/health/v1/health.pb.h"
 
 namespace Envoy {
@@ -376,6 +377,77 @@ public:
 
   // GrpcHealthCheckerImpl
   Http::CodecClientPtr createCodecClient(Upstream::Host::CreateConnectionData& data) override;
+};
+
+class UdpHealthCheckMatcher {
+public:
+  typedef std::list<std::vector<uint8_t>> MatchSegments;
+
+  static MatchSegments loadProtoBytes(
+      const Protobuf::RepeatedPtrField<envoy::api::v2::core::HealthCheck::Payload>& byte_array);
+  static bool match(const MatchSegments& expected, const Buffer::Instance& buffer);
+};
+
+/**
+ * UDP health checker implementation.
+ */
+class UdpHealthCheckerImpl : public HealthCheckerImplBase {
+public:
+  UdpHealthCheckerImpl(const Cluster& cluster, const envoy::api::v2::core::HealthCheck& config,
+                       Event::Dispatcher& dispatcher, Runtime::Loader& runtime,
+                       Runtime::RandomGenerator& random, HealthCheckEventLoggerPtr&& event_logger);
+
+private:
+  struct UdpActiveHealthCheckSession;
+
+  struct UdpSessionCallbacks : public Network::ConnectionCallbacks,
+                               public Network::ReadFilterBaseImpl {
+    UdpSessionCallbacks(UdpActiveHealthCheckSession& parent) : parent_(parent) {}
+
+    // Network::ConnectionCallbacks
+    void onEvent(Network::ConnectionEvent event) override { parent_.onEvent(event); }
+    void onAboveWriteBufferHighWatermark() override {}
+    void onBelowWriteBufferLowWatermark() override {}
+
+    // Network::ReadFilter
+    Network::FilterStatus onData(Buffer::Instance& data, bool) override {
+      parent_.onData(data);
+      return Network::FilterStatus::StopIteration;
+    }
+
+    UdpActiveHealthCheckSession& parent_;
+  };
+
+  struct UdpActiveHealthCheckSession : public ActiveHealthCheckSession {
+    UdpActiveHealthCheckSession(UdpHealthCheckerImpl& parent, const HostSharedPtr& host)
+        : ActiveHealthCheckSession(parent, host), parent_(parent) {}
+    ~UdpActiveHealthCheckSession();
+
+    void onData(Buffer::Instance& data);
+    void onEvent(Network::ConnectionEvent event);
+
+    // ActiveHealthCheckSession
+    void onInterval() override;
+    void onTimeout() override;
+    void onDeferredDelete() final;
+
+    UdpHealthCheckerImpl& parent_;
+    Network::ClientConnectionPtr client_;
+    std::shared_ptr<UdpSessionCallbacks> session_callbacks_;
+  };
+
+  typedef std::unique_ptr<UdpActiveHealthCheckSession> UdpActiveHealthCheckSessionPtr;
+
+  // HealthCheckerImplBase
+  ActiveHealthCheckSessionPtr makeSession(HostSharedPtr host) override {
+    return std::make_unique<UdpActiveHealthCheckSession>(*this, host);
+  }
+  envoy::data::core::v2alpha::HealthCheckerType healthCheckerType() const override {
+    return envoy::data::core::v2alpha::HealthCheckerType::UDP;
+  }
+
+  const UdpHealthCheckMatcher::MatchSegments send_bytes_;
+  const UdpHealthCheckMatcher::MatchSegments receive_bytes_;
 };
 
 } // namespace Upstream

@@ -254,6 +254,11 @@ message StatsdSink {
     // <https://github.com/etsy/statsd>`_ compliant listener. If specified,
     // Envoy will connect to this cluster to flush statistics.
     string tcp_cluster_name = 2;
+
+    // The name of a cluster that is running a UDP `statsd
+    // <https://github.com/etsy/statsd>`_ compliant listener. If specified,
+    // Envoy will connect to this cluster to flush statistics.
+    string udp_cluster_name = 4;
   }
   // Optional custom prefix for StatsdSink. If
   // specified, this will override the default prefix.

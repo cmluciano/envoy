@@ -2250,6 +2250,32 @@ TEST(TcpHealthCheckMatcher, loadJsonBytes) {
   }
 }
 
+TEST(UdpHealthCheckMatcher, loadJsonBytes) {
+  {
+    Protobuf::RepeatedPtrField<envoy::api::v2::core::HealthCheck::Payload> repeated_payload;
+    repeated_payload.Add()->set_text("39000000");
+    repeated_payload.Add()->set_text("EEEEEEEE");
+
+    UdpHealthCheckMatcher::MatchSegments segments =
+        UdpHealthCheckMatcher::loadProtoBytes(repeated_payload);
+    EXPECT_EQ(2U, segments.size());
+  }
+
+  {
+    Protobuf::RepeatedPtrField<envoy::api::v2::core::HealthCheck::Payload> repeated_payload;
+    repeated_payload.Add()->set_text("4");
+
+    EXPECT_THROW(UdpHealthCheckMatcher::loadProtoBytes(repeated_payload), EnvoyException);
+  }
+
+  {
+    Protobuf::RepeatedPtrField<envoy::api::v2::core::HealthCheck::Payload> repeated_payload;
+    repeated_payload.Add()->set_text("gg");
+
+    EXPECT_THROW(UdpHealthCheckMatcher::loadProtoBytes(repeated_payload), EnvoyException);
+  }
+}
+
 static void add_uint8(Buffer::Instance& buffer, uint8_t addend) {
   buffer.add(&addend, sizeof(addend));
 }
@@ -2281,6 +2307,35 @@ TEST(TcpHealthCheckMatcher, match) {
   add_uint8(buffer, 1);
   add_uint8(buffer, 2);
   EXPECT_TRUE(TcpHealthCheckMatcher::match(segments, buffer));
+}
+
+TEST(UdpHealthCheckMatcher, match) {
+  Protobuf::RepeatedPtrField<envoy::api::v2::core::HealthCheck::Payload> repeated_payload;
+  repeated_payload.Add()->set_text("01");
+  repeated_payload.Add()->set_text("02");
+
+  UdpHealthCheckMatcher::MatchSegments segments =
+      UdpHealthCheckMatcher::loadProtoBytes(repeated_payload);
+
+  Buffer::OwnedImpl buffer;
+  EXPECT_FALSE(UdpHealthCheckMatcher::match(segments, buffer));
+  add_uint8(buffer, 1);
+  EXPECT_FALSE(UdpHealthCheckMatcher::match(segments, buffer));
+  add_uint8(buffer, 2);
+  EXPECT_TRUE(UdpHealthCheckMatcher::match(segments, buffer));
+
+  buffer.drain(2);
+  add_uint8(buffer, 1);
+  add_uint8(buffer, 3);
+  add_uint8(buffer, 2);
+  EXPECT_TRUE(UdpHealthCheckMatcher::match(segments, buffer));
+
+  buffer.drain(3);
+  add_uint8(buffer, 0);
+  add_uint8(buffer, 3);
+  add_uint8(buffer, 1);
+  add_uint8(buffer, 2);
+  EXPECT_TRUE(UdpHealthCheckMatcher::match(segments, buffer));
 }
 
 class TcpHealthCheckerImplTest : public testing::Test {
@@ -2364,6 +2419,130 @@ public:
   NiceMock<Runtime::MockLoader> runtime_;
   NiceMock<Runtime::MockRandomGenerator> random_;
 };
+
+class UdpHealthCheckerImplTest : public testing::Test {
+public:
+  UdpHealthCheckerImplTest()
+      : cluster_(new NiceMock<MockClusterMockPrioritySet>()),
+        event_logger_(new MockHealthCheckEventLogger()) {}
+
+  void setupData() {
+    const std::string yaml = R"EOF(
+      timeout: 1s
+      interval: 1s
+      unhealthy_threshold: 2
+      healthy_threshold: 2
+      udp_health_check:
+        send: { text: '01' }
+        receive: [{text: '02'}]
+      )EOF";
+
+    health_checker_.reset(new UdpHealthCheckerImpl(*cluster_, parseHealthCheckFromV2Yaml(yaml),
+                                                   dispatcher_, runtime_, random_,
+                                                   HealthCheckEventLoggerPtr(event_logger_)));
+  }
+
+  void setupNoData() {
+    const std::string yaml = R"EOF(
+      timeout: 1s
+      interval: 1s
+      unhealthy_threshold: 2
+      healthy_threshold: 2
+      udp_health_check:
+        send: { }
+        receive: []
+      )EOF";
+
+    health_checker_.reset(new UdpHealthCheckerImpl(*cluster_, parseHealthCheckFromV2Yaml(yaml),
+                                                   dispatcher_, runtime_, random_,
+                                                   HealthCheckEventLoggerPtr(event_logger_)));
+  }
+
+  void setupDataDontReuseConnection() {
+    const std::string yaml = R"EOF(
+          timeout: 1s
+          interval: 1s
+          unhealthy_threshold: 2
+          healthy_threshold: 2
+          reuse_connection: false
+          udp_health_check:
+            send: { text: '01' }
+            receive: [{text: '02'}]
+          )EOF";
+
+    health_checker_.reset(new UdpHealthCheckerImpl(*cluster_, parseHealthCheckFromV2Yaml(yaml),
+                                                   dispatcher_, runtime_, random_,
+                                                   HealthCheckEventLoggerPtr(event_logger_)));
+  }
+
+  void expectSessionCreate() {
+    interval_timer_ = new Event::MockTimer(&dispatcher_);
+    timeout_timer_ = new Event::MockTimer(&dispatcher_);
+  }
+
+  void expectClientCreate() {
+    connection_ = new NiceMock<Network::MockClientConnection>();
+    EXPECT_CALL(dispatcher_, createClientConnection_(_, _, _, _)).WillOnce(Return(connection_));
+    EXPECT_CALL(*connection_, addReadFilter(_)).WillOnce(SaveArg<0>(&read_filter_));
+  }
+
+  std::shared_ptr<MockClusterMockPrioritySet> cluster_;
+  NiceMock<Event::MockDispatcher> dispatcher_;
+  std::shared_ptr<UdpHealthCheckerImpl> health_checker_;
+  MockHealthCheckEventLogger* event_logger_{};
+  Network::MockClientConnection* connection_{};
+  Event::MockTimer* timeout_timer_{};
+  Event::MockTimer* interval_timer_{};
+  Network::ReadFilterSharedPtr read_filter_;
+  NiceMock<Runtime::MockLoader> runtime_;
+  NiceMock<Runtime::MockRandomGenerator> random_;
+};
+
+TEST_F(UdpHealthCheckerImplTest, Success) {
+  InSequence s;
+
+  setupData();
+  cluster_->prioritySet().getMockHostSet(0)->hosts_ = {
+      makeTestHost(cluster_->info_, "udp://127.0.0.1:80")};
+  expectSessionCreate();
+  expectClientCreate();
+  EXPECT_CALL(*connection_, write(_, _));
+  EXPECT_CALL(*timeout_timer_, enableTimer(_));
+  health_checker_->start();
+
+  connection_->runHighWatermarkCallbacks();
+  connection_->runLowWatermarkCallbacks();
+  connection_->raiseEvent(Network::ConnectionEvent::Connected);
+
+  EXPECT_CALL(*timeout_timer_, disableTimer());
+  EXPECT_CALL(*interval_timer_, enableTimer(_));
+  Buffer::OwnedImpl response;
+  add_uint8(response, 2);
+  read_filter_->onData(response, false);
+}
+
+TEST_F(UdpHealthCheckerImplTest, NoData) {
+  InSequence s;
+
+  setupNoData();
+  cluster_->prioritySet().getMockHostSet(0)->hosts_ = {
+      makeTestHost(cluster_->info_, "udp://127.0.0.1:80")};
+  expectSessionCreate();
+  expectClientCreate();
+  EXPECT_CALL(*connection_, write(_, _)).Times(0);
+  EXPECT_CALL(*timeout_timer_, enableTimer(_));
+  health_checker_->start();
+
+  EXPECT_CALL(*connection_, close(_));
+  EXPECT_CALL(*timeout_timer_, disableTimer());
+  EXPECT_CALL(*interval_timer_, enableTimer(_));
+  connection_->raiseEvent(Network::ConnectionEvent::Connected);
+
+  expectClientCreate();
+  EXPECT_CALL(*connection_, write(_, _)).Times(0);
+  EXPECT_CALL(*timeout_timer_, enableTimer(_));
+  interval_timer_->callback_();
+}
 
 TEST_F(TcpHealthCheckerImplTest, Success) {
   InSequence s;

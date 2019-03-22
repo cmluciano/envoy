@@ -80,6 +80,7 @@ message Capability {
     HTTP = 0;
     TCP = 1;
     REDIS = 2;
+    UDP = 3;
   }
   repeated Protocol health_check_protocols = 1;
 }

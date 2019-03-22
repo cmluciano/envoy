@@ -142,6 +142,16 @@ message HealthCheck {
     repeated Payload receive = 2;
   }
 
+  message UdpHealthCheck {
+    // Empty payloads imply a connect-only health check.
+    Payload send = 1;
+
+    // When checking the response, “fuzzy” matching is performed such that each
+    // binary block must be found, and in the order specified, but not
+    // necessarily contiguous.
+    repeated Payload receive = 2;
+  }
+
   message RedisHealthCheck {
     // If set, optionally perform ``EXISTS <key>`` instead of ``PING``. A return value
     // from Redis of 0 (does not exist) is considered a passing healthcheck. A return value other
@@ -196,6 +206,9 @@ message HealthCheck {
 
     // Custom health check.
     CustomHealthCheck custom_health_check = 13;
+
+    // UDP health check.
+    UdpHealthCheck udp_health_check = 21;
   }
 
   reserved 10; // redis_health_check is deprecated by :ref:`custom_health_check

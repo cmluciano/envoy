@@ -59,6 +59,35 @@ public:
   NiceMock<Stats::MockMetricSnapshot> snapshot_;
 };
 
+class NewUdpStatsdSinkTest : public testing::Test {
+public:
+  NewUdpStatsdSinkTest() {
+    sink_ = std::make_unique<NewUdpStatsdSink>(
+        local_info_, "fake_cluster", tls_, cluster_manager_,
+        cluster_manager_.thread_local_cluster_.cluster_.info_->stats_store_);
+  }
+
+  void expectCreateConnection() {
+    connection_ = new NiceMock<Network::MockClientConnection>();
+    Upstream::MockHost::MockCreateConnectionData conn_info;
+    conn_info.connection_ = connection_;
+    conn_info.host_description_ = Upstream::makeTestHost(
+        std::make_unique<NiceMock<Upstream::MockClusterInfo>>(), "udp://127.0.0.1:80");
+
+    EXPECT_CALL(cluster_manager_, udpConnForCluster_("fake_cluster", _))
+        .WillOnce(Return(conn_info));
+    EXPECT_CALL(*connection_, setConnectionStats(_));
+    EXPECT_CALL(*connection_, connect());
+  }
+
+  NiceMock<ThreadLocal::MockInstance> tls_;
+  NiceMock<Upstream::MockClusterManager> cluster_manager_;
+  std::unique_ptr<NewUdpStatsdSink> sink_;
+  NiceMock<LocalInfo::MockLocalInfo> local_info_;
+  Network::MockClientConnection* connection_{};
+  NiceMock<Stats::MockMetricSnapshot> snapshot_;
+};
+
 TEST_F(TcpStatsdSinkTest, EmptyFlush) {
   InSequence s;
   expectCreateConnection();
@@ -66,7 +95,50 @@ TEST_F(TcpStatsdSinkTest, EmptyFlush) {
   sink_->flush(snapshot_);
 }
 
+TEST_F(NewUdpStatsdSinkTest, EmptyFlush) {
+    InSequence s;
+    expectCreateConnection();
+    EXPECT_CALL(*connection_, write(BufferStringEqual(""), _));
+    sink_->flush(snapshot_);
+}
+
 TEST_F(TcpStatsdSinkTest, BasicFlow) {
+  InSequence s;
+  auto counter = std::make_shared<NiceMock<Stats::MockCounter>>();
+  counter->name_ = "test_counter";
+  counter->latch_ = 1;
+  counter->used_ = true;
+  snapshot_.counters_.push_back({1, *counter});
+
+  auto gauge = std::make_shared<NiceMock<Stats::MockGauge>>();
+  gauge->name_ = "test_gauge";
+  gauge->value_ = 2;
+  gauge->used_ = true;
+  snapshot_.gauges_.push_back(*gauge);
+
+  expectCreateConnection();
+  EXPECT_CALL(*connection_,
+              write(BufferStringEqual("envoy.test_counter:1|c\nenvoy.test_gauge:2|g\n"), _));
+  sink_->flush(snapshot_);
+
+  connection_->runHighWatermarkCallbacks();
+  connection_->runLowWatermarkCallbacks();
+
+  // Test a disconnect. We should connect again.
+  connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
+
+  expectCreateConnection();
+
+  NiceMock<Stats::MockHistogram> timer;
+  timer.name_ = "test_timer";
+  EXPECT_CALL(*connection_, write(BufferStringEqual("envoy.test_timer:5|ms\n"), _));
+  sink_->onHistogramComplete(timer, 5);
+
+  EXPECT_CALL(*connection_, close(Network::ConnectionCloseType::NoFlush));
+  tls_.shutdownThread();
+}
+
+TEST_F(NewUdpStatsdSinkTest, BasicFlow) {
   InSequence s;
   auto counter = std::make_shared<NiceMock<Stats::MockCounter>>();
   counter->name_ = "test_counter";
@@ -122,6 +194,26 @@ TEST_F(TcpStatsdSinkTest, NoHost) {
   sink_->flush(snapshot_);
 }
 
+// Verify that when there is no statsd host we correctly empty all output buffers so we don't
+// infinitely buffer.
+TEST_F(NewUdpStatsdSinkTest, NoHost) {
+    InSequence s;
+    auto counter = std::make_shared<NiceMock<Stats::MockCounter>>();
+    counter->name_ = "test_counter";
+    counter->latch_ = 1;
+    counter->used_ = true;
+    snapshot_.counters_.push_back({1, *counter});
+
+    Upstream::MockHost::MockCreateConnectionData conn_info;
+    EXPECT_CALL(cluster_manager_, udpConnForCluster_("fake_cluster", _))
+            .WillOnce(Return(conn_info))
+            .WillOnce(Return(conn_info));
+    sink_->flush(snapshot_);
+
+    // Flush again to make sure we correctly drain the buffer and the output buffer is empty.
+    sink_->flush(snapshot_);
+}
+
 TEST_F(TcpStatsdSinkTest, WithCustomPrefix) {
   sink_ = std::make_unique<TcpStatsdSink>(
       local_info_, "fake_cluster", tls_, cluster_manager_,
@@ -139,6 +231,29 @@ TEST_F(TcpStatsdSinkTest, WithCustomPrefix) {
 }
 
 TEST_F(TcpStatsdSinkTest, BufferReallocate) {
+  InSequence s;
+
+  auto counter = std::make_shared<NiceMock<Stats::MockCounter>>();
+  counter->name_ = "test_counter";
+  counter->latch_ = 1;
+  counter->used_ = true;
+
+  snapshot_.counters_.resize(2000, {1, *counter});
+
+  expectCreateConnection();
+  EXPECT_CALL(*connection_, write(_, _))
+      .WillOnce(Invoke([](Buffer::Instance& buffer, bool) -> void {
+        std::string compare;
+        for (int i = 0; i < 2000; i++) {
+          compare += "envoy.test_counter:1|c\n";
+        }
+        EXPECT_EQ(compare, buffer.toString());
+        buffer.drain(buffer.length());
+      }));
+  sink_->flush(snapshot_);
+}
+
+TEST_F(NewUdpStatsdSinkTest, BufferReallocate) {
   InSequence s;
 
   auto counter = std::make_shared<NiceMock<Stats::MockCounter>>();

@@ -173,6 +173,18 @@ public:
                     Network::TransportSocketOptionsSharedPtr transport_socket_options) PURE;
 
   /**
+   * Allocate a load balanced UDP connection for a cluster. The created connection is already
+   * bound to the correct *per-thread* dispatcher, so no further synchronization is needed. The
+   * load balancing policy that is used is the one defined on the cluster when it was created.
+   *
+   * Returns both a connection and the host that backs the connection. Both can be nullptr if there
+   * is no host available in the cluster.
+   */
+  virtual Host::CreateConnectionData
+  udpConnForCluster(const std::string& cluster, LoadBalancerContext* context,
+                    Network::TransportSocketOptionsSharedPtr transport_socket_options) PURE;
+
+  /**
    * Returns a client that can be used to make async HTTP calls against the given cluster. The
    * client may be backed by a connection pool or by a multiplexed connection. The cluster manager
    * owns the client.

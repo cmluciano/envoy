@@ -783,6 +783,31 @@ public:
     EXPECT_EQ(cluster1->prioritySet().getMockHostSet(0)->hosts_[0],
               cluster_manager_->get("cluster_0")->loadBalancer().chooseHost(nullptr));
   }
+  void doUdpTest(LoadBalancerType lb_type) {
+    const std::string json = fmt::sprintf("{\"static_resources\":{%s}}",
+                                          clustersJson({defaultStaticClusterJson("cluster_udp_0")}));
+
+    std::shared_ptr<MockClusterMockPrioritySet> cluster1(
+        new NiceMock<MockClusterMockPrioritySet>());
+    cluster1->info_->name_ = "cluster_udp_0";
+    cluster1->info_->lb_type_ = lb_type;
+
+    InSequence s;
+    EXPECT_CALL(factory_, clusterFromProto_(_, _, _, _))
+        .WillOnce(Return(std::make_pair(cluster1, nullptr)));
+    ON_CALL(*cluster1, initializePhase()).WillByDefault(Return(Cluster::InitializePhase::Primary));
+    create(parseBootstrapFromV2Json(json));
+
+    EXPECT_EQ(nullptr, cluster_manager_->get("cluster_udp_0")->loadBalancer().chooseHost(nullptr));
+
+    cluster1->prioritySet().getMockHostSet(0)->hosts_ = {
+        makeTestHost(cluster1->info_, "udp://127.0.0.1:80")};
+    cluster1->prioritySet().getMockHostSet(0)->runCallbacks(
+        cluster1->prioritySet().getMockHostSet(0)->hosts_, {});
+    cluster1->initialize_callback_();
+    EXPECT_EQ(cluster1->prioritySet().getMockHostSet(0)->hosts_[0],
+              cluster_manager_->get("cluster_udp_0")->loadBalancer().chooseHost(nullptr));
+  }
 };
 
 // Test that the cluster manager correctly re-creates the worker local LB when there is a host
@@ -795,6 +820,16 @@ TEST_F(ClusterManagerImplThreadAwareLbTest, RingHashLoadBalancerThreadAwareUpdat
 // set change.
 TEST_F(ClusterManagerImplThreadAwareLbTest, MaglevLoadBalancerThreadAwareUpdate) {
   doTest(LoadBalancerType::Maglev);
+}
+
+// Test that the cluster manager correctly re-creates the worker local LB when there is a host
+// set change.
+TEST_F(ClusterManagerImplThreadAwareLbTest, UdpRingHashLoadBalancerThreadAwareUpdate) {
+  doUdpTest(LoadBalancerType::RingHash);
+}
+
+TEST_F(ClusterManagerImplThreadAwareLbTest, UdpMaglevLoadBalancerThreadAwareUpdate) {
+  doUdpTest(LoadBalancerType::Maglev);
 }
 
 TEST_F(ClusterManagerImplTest, TcpHealthChecker) {
@@ -829,6 +864,43 @@ static_resources:
   EXPECT_CALL(factory_.dispatcher_,
               createClientConnection_(
                   PointeesEq(Network::Utility::resolveUrl("tcp://127.0.0.1:11001")), _, _, _))
+      .WillOnce(Return(connection));
+  create(parseBootstrapFromV2Yaml(yaml));
+  factory_.tls_.shutdownThread();
+}
+
+TEST_F(ClusterManagerImplTest, UdpHealthChecker) {
+    const std::string yaml = R"EOF(
+static_resources:
+  clusters:
+  - name: cluster_udp_1
+    connect_timeout: 0.250s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11001
+    health_checks:
+    - timeout: 1s
+      interval: 1s
+      unhealthy_threshold: 2
+      healthy_threshold: 2
+      udp_health_check:
+        send:
+          text: '01'
+        receive:
+          - text: '02'
+  )EOF";
+
+  Network::MockClientConnection* connection = new NiceMock<Network::MockClientConnection>();
+  EXPECT_CALL(factory_.dispatcher_,
+              createClientConnection_(
+                  PointeesEq(Network::Utility::resolveUrl("udp://127.0.0.1:11001")), _, _, _))
       .WillOnce(Return(connection));
   create(parseBootstrapFromV2Yaml(yaml));
   factory_.tls_.shutdownThread();
@@ -893,7 +965,7 @@ TEST_F(ClusterManagerImplTest, UnknownCluster) {
 }
 
 /**
- * Test that buffer limits are set on new TCP connections.
+ * Test that buffer limits are set on new TCP/UDP connections.
  */
 TEST_F(ClusterManagerImplTest, VerifyBufferLimits) {
   const std::string yaml = R"EOF(
@@ -912,15 +984,36 @@ static_resources:
                 socket_address:
                   address: 127.0.0.1
                   port_value: 11001
+  - name: udp_cluster_1
+    connect_timeout: 0.250s
+    type: static
+    lb_policy: round_robin
+    per_connection_buffer_limit_bytes: 8192
+    load_assignment:
+      endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: 127.0.0.1
+                  port_value: 11002
   )EOF";
 
   create(parseBootstrapFromV2Yaml(yaml));
+  // Verify TCP limits
   Network::MockClientConnection* connection = new NiceMock<Network::MockClientConnection>();
   EXPECT_CALL(*connection, setBufferLimits(8192));
   EXPECT_CALL(factory_.tls_.dispatcher_, createClientConnection_(_, _, _, _))
       .WillOnce(Return(connection));
   auto conn_data = cluster_manager_->tcpConnForCluster("cluster_1", nullptr, nullptr);
   EXPECT_EQ(connection, conn_data.connection_.get());
+  // Verify UDP limits
+  Network::MockClientConnection* connection_udp = new NiceMock<Network::MockClientConnection>();
+  EXPECT_CALL(*connection_udp, setBufferLimits(8192));
+  EXPECT_CALL(factory_.tls_.dispatcher_, createClientConnection_(_, _, _, _))
+      .WillOnce(Return(connection_udp));
+  auto conn_data_udp = cluster_manager_->udpConnForCluster("udp_cluster_1", nullptr, nullptr);
+  EXPECT_EQ(connection_udp, conn_data_udp.connection_.get());
   factory_.tls_.shutdownThread();
 }
 
@@ -1573,17 +1666,9 @@ TEST_F(ClusterManagerImplTest, CloseTcpConnectionPoolsOnHealthFailure) {
 // Test that we close all TCP connection pool connections when there is a host health failure, when
 // configured to do so.
 TEST_F(ClusterManagerImplTest, CloseTcpConnectionsOnHealthFailure) {
-  const std::string yaml = R"EOF(
-  static_resources:
-    clusters:
-    - name: some_cluster
-      connect_timeout: 0.250s
-      lb_policy: ROUND_ROBIN
-      close_connections_on_host_health_failure: true
-  )EOF";
+  const std::string json = fmt::sprintf("{\"static_resources\":{%s}}",
+                                        clustersJson({defaultStaticClusterJson("some_cluster")}));
   std::shared_ptr<MockClusterMockPrioritySet> cluster1(new NiceMock<MockClusterMockPrioritySet>());
-  EXPECT_CALL(*cluster1->info_, features())
-      .WillRepeatedly(Return(ClusterInfo::Features::CLOSE_CONNECTIONS_ON_HOST_HEALTH_FAILURE));
   cluster1->info_->name_ = "some_cluster";
   HostSharedPtr test_host = makeTestHost(cluster1->info_, "tcp://127.0.0.1:80");
   cluster1->prioritySet().getMockHostSet(0)->hosts_ = {test_host};
@@ -1595,9 +1680,8 @@ TEST_F(ClusterManagerImplTest, CloseTcpConnectionsOnHealthFailure) {
   Outlier::MockDetector outlier_detector;
   ON_CALL(*cluster1, outlierDetector()).WillByDefault(Return(&outlier_detector));
 
-  Network::MockClientConnection* connection1 = new NiceMock<Network::MockClientConnection>();
-  Network::MockClientConnection* connection2 = new NiceMock<Network::MockClientConnection>();
-  Host::CreateConnectionData conn_info1, conn_info2;
+  Tcp::ConnectionPool::MockInstance* cp1 = new Tcp::ConnectionPool::MockInstance();
+  Tcp::ConnectionPool::MockInstance* cp2 = new Tcp::ConnectionPool::MockInstance();
 
   {
     InSequence s;
@@ -1611,32 +1695,27 @@ TEST_F(ClusterManagerImplTest, CloseTcpConnectionsOnHealthFailure) {
           // Test inline init.
           initialize_callback();
         }));
-    create(parseBootstrapFromV2Yaml(yaml));
+    create(parseBootstrapFromV2Json(json));
 
-    EXPECT_CALL(factory_.tls_.dispatcher_, createClientConnection_(_, _, _, _))
-        .WillOnce(Return(connection1));
-    conn_info1 = cluster_manager_->tcpConnForCluster("some_cluster", nullptr, nullptr);
+    EXPECT_CALL(factory_, allocateTcpConnPool_(_)).WillOnce(Return(cp1));
+    cluster_manager_->tcpConnPoolForCluster("some_cluster", ResourcePriority::Default, nullptr,
+                                            nullptr);
 
     outlier_detector.runCallbacks(test_host);
     health_checker.runCallbacks(test_host, HealthTransition::Unchanged);
 
-    EXPECT_CALL(*connection1, close(Network::ConnectionCloseType::NoFlush));
+    EXPECT_CALL(*cp1, drainConnections());
     test_host->healthFlagSet(Host::HealthFlag::FAILED_OUTLIER_CHECK);
     outlier_detector.runCallbacks(test_host);
 
-    connection1 = new NiceMock<Network::MockClientConnection>();
-    EXPECT_CALL(factory_.tls_.dispatcher_, createClientConnection_(_, _, _, _))
-        .WillOnce(Return(connection1));
-    conn_info1 = cluster_manager_->tcpConnForCluster("some_cluster", nullptr, nullptr);
-
-    EXPECT_CALL(factory_.tls_.dispatcher_, createClientConnection_(_, _, _, _))
-        .WillOnce(Return(connection2));
-    conn_info2 = cluster_manager_->tcpConnForCluster("some_cluster", nullptr, nullptr);
+    EXPECT_CALL(factory_, allocateTcpConnPool_(_)).WillOnce(Return(cp2));
+    cluster_manager_->tcpConnPoolForCluster("some_cluster", ResourcePriority::High, nullptr,
+                                            nullptr);
   }
 
   // Order of these calls is implementation dependent, so can't sequence them!
-  EXPECT_CALL(*connection1, close(Network::ConnectionCloseType::NoFlush));
-  EXPECT_CALL(*connection2, close(Network::ConnectionCloseType::NoFlush));
+  EXPECT_CALL(*cp1, drainConnections());
+  EXPECT_CALL(*cp2, drainConnections());
   test_host->healthFlagSet(Host::HealthFlag::FAILED_ACTIVE_HC);
   health_checker.runCallbacks(test_host, HealthTransition::Changed);
 

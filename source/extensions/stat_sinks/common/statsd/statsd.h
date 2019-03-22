@@ -138,6 +138,68 @@ private:
   Stats::Counter& cx_overflow_stat_;
 };
 
+/**
+ * Per thread implementation of a UDP stats flusher for statsd.
+ */
+class NewUdpStatsdSink : public Stats::Sink {
+public:
+  NewUdpStatsdSink(const LocalInfo::LocalInfo& local_info, const std::string& cluster_name,
+                ThreadLocal::SlotAllocator& tls, Upstream::ClusterManager& cluster_manager,
+                Stats::Scope& scope, const std::string& prefix = getDefaultPrefix());
+
+  // Stats::Sink
+  void flush(Stats::MetricSnapshot& snapshot) override;
+  void onHistogramComplete(const Stats::Histogram& histogram, uint64_t value) override {
+    // For statsd histograms are all timers.
+    tls_->getTyped<TlsSink>().onTimespanComplete(histogram.name(),
+                                                 std::chrono::milliseconds(value));
+  }
+
+  const std::string& getPrefix() { return prefix_; }
+
+private:
+  struct TlsSink : public ThreadLocal::ThreadLocalObject, public Network::ConnectionCallbacks {
+    TlsSink(NewUdpStatsdSink& parent, Event::Dispatcher& dispatcher);
+    ~TlsSink();
+
+    void beginFlush(bool expect_empty_buffer);
+    void checkSize();
+    void commonFlush(const std::string& name, uint64_t value, char stat_type);
+    void flushCounter(const std::string& name, uint64_t delta);
+    void flushGauge(const std::string& name, uint64_t value);
+    void endFlush(bool do_write);
+    void onTimespanComplete(const std::string& name, std::chrono::milliseconds ms);
+    uint64_t usedBuffer();
+    void write(Buffer::Instance& buffer);
+
+    // Network::ConnectionCallbacks
+    void onEvent(Network::ConnectionEvent event) override;
+    void onAboveWriteBufferHighWatermark() override {}
+    void onBelowWriteBufferLowWatermark() override {}
+
+    NewUdpStatsdSink& parent_;
+    Event::Dispatcher& dispatcher_;
+    Network::ClientConnectionPtr connection_;
+    Buffer::OwnedImpl buffer_;
+    Buffer::RawSlice current_buffer_slice_;
+    char* current_slice_mem_{};
+  };
+
+  // Somewhat arbitrary 16MiB limit for buffered stats.
+  static constexpr uint32_t MAX_BUFFERED_STATS_BYTES = (1024 * 1024 * 16);
+
+  // 16KiB intermediate buffer for flushing.
+  static constexpr uint32_t FLUSH_SLICE_SIZE_BYTES = (1024 * 16);
+
+  // Prefix for all flushed stats.
+  const std::string prefix_;
+
+  Upstream::ClusterInfoConstSharedPtr cluster_info_;
+  ThreadLocal::SlotPtr tls_;
+  Upstream::ClusterManager& cluster_manager_;
+  Stats::Counter& cx_overflow_stat_;
+};
+
 } // namespace Statsd
 } // namespace Common
 } // namespace StatSinks

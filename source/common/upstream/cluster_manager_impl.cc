@@ -750,6 +750,35 @@ Host::CreateConnectionData ClusterManagerImpl::tcpConnForCluster(
   }
 }
 
+Host::CreateConnectionData ClusterManagerImpl::udpConnForCluster(
+    const std::string& cluster, LoadBalancerContext* context,
+    Network::TransportSocketOptionsSharedPtr transport_socket_options) {
+  ThreadLocalClusterManagerImpl& cluster_manager = tls_->getTyped<ThreadLocalClusterManagerImpl>();
+
+  auto entry = cluster_manager.thread_local_clusters_.find(cluster);
+  if (entry == cluster_manager.thread_local_clusters_.end()) {
+    throw EnvoyException(fmt::format("unknown cluster '{}'", cluster));
+  }
+
+  HostConstSharedPtr logical_host = entry->second->lb_->chooseHost(context);
+  if (logical_host) {
+    auto conn_info = logical_host->createConnection(cluster_manager.thread_local_dispatcher_,
+                                                    nullptr, transport_socket_options);
+    if ((entry->second->cluster_info_->features() &
+         ClusterInfo::Features::CLOSE_CONNECTIONS_ON_HOST_HEALTH_FAILURE) &&
+        conn_info.connection_ != nullptr) {
+      auto& conn_map = cluster_manager.host_udp_conn_map_[logical_host];
+      conn_map.emplace(conn_info.connection_.get(),
+                       std::make_unique<ThreadLocalClusterManagerImpl::UdpConnContainer>(
+                           cluster_manager, logical_host, *conn_info.connection_));
+    }
+    return conn_info;
+  } else {
+    entry->second->cluster_info_->stats().upstream_cx_none_healthy_.inc();
+    return {nullptr, nullptr};
+  }
+}
+
 Http::AsyncClient& ClusterManagerImpl::httpAsyncClientForCluster(const std::string& cluster) {
   ThreadLocalClusterManagerImpl& cluster_manager = tls_->getTyped<ThreadLocalClusterManagerImpl>();
   auto entry = cluster_manager.thread_local_clusters_.find(cluster);
@@ -836,6 +865,7 @@ ClusterManagerImpl::ThreadLocalClusterManagerImpl::~ThreadLocalClusterManagerImp
   host_http_conn_pool_map_.clear();
   host_tcp_conn_pool_map_.clear();
   ASSERT(host_tcp_conn_map_.empty());
+  ASSERT(host_udp_conn_map_.empty());
   for (auto& cluster : thread_local_clusters_) {
     if (&cluster.second->priority_set_ != local_priority_set_) {
       cluster.second.reset();
@@ -954,6 +984,20 @@ void ClusterManagerImpl::ThreadLocalClusterManagerImpl::removeTcpConn(
   }
 }
 
+void ClusterManagerImpl::ThreadLocalClusterManagerImpl::removeUdpConn(
+    const HostConstSharedPtr& host, Network::ClientConnection& connection) {
+  auto host_udp_conn_map_it = host_udp_conn_map_.find(host);
+  ASSERT(host_udp_conn_map_it != host_udp_conn_map_.end());
+  UdpConnectionsMap& connections_map = host_udp_conn_map_it->second;
+  auto it = connections_map.find(&connection);
+  ASSERT(it != connections_map.end());
+  connection.dispatcher().deferredDelete(std::move(it->second));
+  connections_map.erase(it);
+  if (connections_map.empty()) {
+    host_udp_conn_map_.erase(host_udp_conn_map_it);
+  }
+}
+
 void ClusterManagerImpl::ThreadLocalClusterManagerImpl::removeHosts(const std::string& name,
                                                                     const HostVector& hosts_removed,
                                                                     ThreadLocal::Slot& tls) {
@@ -1030,11 +1074,14 @@ void ClusterManagerImpl::ThreadLocalClusterManagerImpl::onHostHealthFailure(
     // "close_connections_on_host_health_failure". Update the docs if this if this changes.
     while (true) {
       const auto& it = config.host_tcp_conn_map_.find(host);
-      if (it == config.host_tcp_conn_map_.end()) {
+      const auto& th = config.host_udp_conn_map_.find(host);
+      if (it == config.host_tcp_conn_map_.end() || th == config.host_udp_conn_map_.end()) {
         break;
       }
       TcpConnectionsMap& container = it->second;
       container.begin()->first->close(Network::ConnectionCloseType::NoFlush);
+      UdpConnectionsMap& udp_container = th->second;
+      udp_container.begin()->first->close(Network::ConnectionCloseType::NoFlush);
     }
   }
 }

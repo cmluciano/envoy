@@ -57,6 +57,7 @@ enum HealthCheckerType {
   TCP = 1;
   GRPC = 2;
   REDIS = 3;
+  UDP = 4;
 }
 
 message HealthCheckEjectUnhealthy {

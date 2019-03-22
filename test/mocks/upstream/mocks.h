@@ -296,6 +296,13 @@ public:
     return {Network::ClientConnectionPtr{data.connection_}, data.host_description_};
   }
 
+  Host::CreateConnectionData udpConnForCluster(const std::string& cluster,
+                                               LoadBalancerContext* context,
+                                               Network::TransportSocketOptionsSharedPtr) override {
+    MockHost::MockCreateConnectionData data = udpConnForCluster_(cluster, context);
+    return {Network::ClientConnectionPtr{data.connection_}, data.host_description_};
+  }
+
   ClusterManagerFactory& clusterManagerFactory() override { return cluster_manager_factory_; }
 
   // Upstream::ClusterManager
@@ -315,6 +322,9 @@ public:
                    LoadBalancerContext* context,
                    Network::TransportSocketOptionsSharedPtr transport_socket_options));
   MOCK_METHOD2(tcpConnForCluster_,
+               MockHost::MockCreateConnectionData(const std::string& cluster,
+                                                  LoadBalancerContext* context));
+  MOCK_METHOD2(udpConnForCluster_,
                MockHost::MockCreateConnectionData(const std::string& cluster,
                                                   LoadBalancerContext* context));
   MOCK_METHOD1(httpAsyncClientForCluster, Http::AsyncClient&(const std::string& cluster));

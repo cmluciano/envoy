@@ -83,6 +83,9 @@ HealthCheckerFactory::create(const envoy::api::v2::core::HealthCheck& health_che
                                             std::move(event_logger), validation_visitor));
     return factory.createCustomHealthChecker(health_check_config, *context);
   }
+  case envoy::api::v2::core::HealthCheck::HealthCheckerCase::kUdpHealthCheck:
+    return std::make_shared<UdpHealthCheckerImpl>(cluster, health_check_config, dispatcher, runtime,
+                                                  random, std::move(event_logger));
   default:
     // Checked by schema.
     NOT_REACHED_GCOVR_EXCL_LINE;
@@ -464,6 +467,131 @@ void TcpHealthCheckerImpl::TcpActiveHealthCheckSession::onInterval() {
 
 void TcpHealthCheckerImpl::TcpActiveHealthCheckSession::onTimeout() {
   expect_close_ = true;
+  host_->setActiveHealthFailureType(Host::ActiveHealthFailureType::TIMEOUT);
+  client_->close(Network::ConnectionCloseType::NoFlush);
+}
+
+UdpHealthCheckMatcher::MatchSegments UdpHealthCheckMatcher::loadProtoBytes(
+    const Protobuf::RepeatedPtrField<envoy::api::v2::core::HealthCheck::Payload>& byte_array) {
+  MatchSegments result;
+
+  for (const auto& entry : byte_array) {
+    const auto decoded = Hex::decode(entry.text());
+    if (decoded.size() == 0) {
+      throw EnvoyException(fmt::format("invalid hex string '{}'", entry.text()));
+    }
+    result.push_back(decoded);
+  }
+
+  return result;
+}
+
+bool UdpHealthCheckMatcher::match(const MatchSegments& expected, const Buffer::Instance& buffer) {
+  uint64_t start_index = 0;
+  for (const std::vector<uint8_t>& segment : expected) {
+    ssize_t search_result = buffer.search(&segment[0], segment.size(), start_index);
+    if (search_result == -1) {
+      return false;
+    }
+
+    start_index = search_result + segment.size();
+  }
+  return true;
+}
+
+UdpHealthCheckerImpl::UdpHealthCheckerImpl(const Cluster& cluster,
+                                           const envoy::api::v2::core::HealthCheck& config,
+                                           Event::Dispatcher& dispatcher, Runtime::Loader& runtime,
+                                           Runtime::RandomGenerator& random,
+                                           HealthCheckEventLoggerPtr&& event_logger)
+    : HealthCheckerImplBase(cluster, config, dispatcher, runtime, random, std::move(event_logger)),
+      send_bytes_([&config] {
+        Protobuf::RepeatedPtrField<envoy::api::v2::core::HealthCheck::Payload> send_repeated;
+        if (!config.udp_health_check().send().text().empty()) {
+          send_repeated.Add()->CopyFrom(config.udp_health_check().send());
+        }
+        return UdpHealthCheckMatcher::loadProtoBytes(send_repeated);
+      }()),
+      receive_bytes_(UdpHealthCheckMatcher::loadProtoBytes(config.udp_health_check().receive())) {}
+
+UdpHealthCheckerImpl::UdpActiveHealthCheckSession::~UdpActiveHealthCheckSession() {
+  onDeferredDelete();
+  ASSERT(client_ == nullptr);
+}
+
+void UdpHealthCheckerImpl::UdpActiveHealthCheckSession::onDeferredDelete() {
+  if (client_) {
+    client_->close(Network::ConnectionCloseType::NoFlush);
+  }
+}
+
+void UdpHealthCheckerImpl::UdpActiveHealthCheckSession::onData(Buffer::Instance& data) {
+  ENVOY_CONN_LOG(trace, "total pending buffer={}", *client_, data.length());
+  if (UdpHealthCheckMatcher::match(parent_.receive_bytes_, data)) {
+    ENVOY_CONN_LOG(trace, "healthcheck passed", *client_);
+    data.drain(data.length());
+    handleSuccess(false);
+    if (!parent_.reuse_connection_) {
+      client_->close(Network::ConnectionCloseType::NoFlush);
+    }
+  } else {
+    host_->setActiveHealthFailureType(Host::ActiveHealthFailureType::UNHEALTHY);
+  }
+}
+
+void UdpHealthCheckerImpl::UdpActiveHealthCheckSession::onEvent(Network::ConnectionEvent event) {
+  if (event == Network::ConnectionEvent::RemoteClose) {
+    handleFailure(envoy::data::core::v2alpha::HealthCheckFailureType::NETWORK);
+  }
+
+  if (event == Network::ConnectionEvent::RemoteClose ||
+      event == Network::ConnectionEvent::LocalClose) {
+    parent_.dispatcher_.deferredDelete(std::move(client_));
+  }
+
+  if (event == Network::ConnectionEvent::Connected && parent_.receive_bytes_.empty()) {
+    // In this case we are just testing that we can connect, so immediately succeed. Also, since
+    // we are just doing a connection test, close the connection.
+    // NOTE(mattklein123): I've seen cases where the kernel will report a successful connection, and
+    // then proceed to fail subsequent calls (so the connection did not actually succeed). I'm not
+    // sure what situations cause this. If this turns into a problem, we may need to introduce a
+    // timer and see if the connection stays alive for some period of time while waiting to read.
+    // (Though we may never get a FIN and won't know until if/when we try to write). In short, this
+    // may need to get more complicated but we can start here.
+    // TODO(mattklein123): If we had a way on the connection interface to do an immediate read (vs.
+    // evented), that would be a good check to run here to make sure it returns the equivalent of
+    // EAGAIN. Need to think through how that would look from an interface perspective.
+    // TODO(mattklein123): In the case that a user configured bytes to write, they will not be
+    // be written, since we currently have no way to know if the bytes actually get written via
+    // the connection interface. We might want to figure out how to handle this better later.
+    client_->close(Network::ConnectionCloseType::NoFlush);
+    handleSuccess(false);
+  }
+}
+
+// TODO(lilika) : Support connection pooling
+void UdpHealthCheckerImpl::UdpActiveHealthCheckSession::onInterval() {
+  if (!client_) {
+    client_ = host_->createHealthCheckConnection(parent_.dispatcher_).connection_;
+    session_callbacks_.reset(new UdpSessionCallbacks(*this));
+    client_->addConnectionCallbacks(*session_callbacks_);
+    client_->addReadFilter(session_callbacks_);
+
+    client_->connect();
+    client_->noDelay(true);
+  }
+
+  if (!parent_.send_bytes_.empty()) {
+    Buffer::OwnedImpl data;
+    for (const std::vector<uint8_t>& segment : parent_.send_bytes_) {
+      data.add(&segment[0], segment.size());
+    }
+
+    client_->write(data, false);
+  }
+}
+
+void UdpHealthCheckerImpl::UdpActiveHealthCheckSession::onTimeout() {
   host_->setActiveHealthFailureType(Host::ActiveHealthFailureType::TIMEOUT);
   client_->close(Network::ConnectionCloseType::NoFlush);
 }
