@@ -1,0 +1,10 @@
+FROM ubuntu:xenial
+
+COPY ./ci/build_container/build_container_common.sh /
+COPY WORKSPACE /bazel-prebuilt/
+COPY ./api /bazel-prebuilt/api
+COPY ./bazel /bazel-prebuilt/bazel
+
+COPY ./ci/build_container/build_container_ubuntu.sh /
+
+RUN ./build_container_ubuntu.sh
