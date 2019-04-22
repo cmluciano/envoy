@@ -43,8 +43,8 @@ update-alternatives --config gcov
 apt-get install -y openjdk-8-jdk curl
 case $ARCH in
     'ppc64le' )
-        sudo curl -fSL https://oplab9.parqtec.unicamp.br/pub/ppc64el/bazel/ubuntu_16.04/bazel_bin_ppc64le_0.24.1 -o /usr/local/bin/bazel
-        sudo chmod +x /usr/local/bin/bazel
+        curl -fSL https://oplab9.parqtec.unicamp.br/pub/ppc64el/bazel/ubuntu_16.04/bazel_bin_ppc64le_0.24.1 -o /usr/local/bin/bazel
+        chmod +x /usr/local/bin/bazel
     ;;
     'x86_64' )
         echo "deb [arch=amd64] http://storage.googleapis.com/bazel-apt stable jdk1.8" | tee /etc/apt/sources.list.d/bazel.list
