@@ -87,6 +87,7 @@ createTransportSocketFactoryHelper(const Protobuf::Message& message, bool is_ups
     //
     // grpc_pollset_set adds pollsets of interested parties & automatically adds their registered
     // fd's hard-coding this to nullptr results in creation of a dedicated tsi_thread
+    grpc_alts_shared_resource_dedicated_init();
     grpc_pollset_set* interested_parties = nullptr;
     // Specifying target name as empty since TSI won't take care of validating peer identity
     // in this use case. The validation will be performed by TsiSocket with the validator.
