@@ -14,7 +14,7 @@ apt-get install -y wget software-properties-common make cmake git python python-
 case $ARCH in
     'ppc64le' )
         LLVM_VERSION=8.0.0
-        LLVM_RELEASE="clang+llvm-${LLVM_VERSION}-x86_64-linux-sles11.3"
+        LLVM_RELEASE="clang+llvm-${LLVM_VERSION}-powerpc64le-unknown-unknown"
         curl -OL "https://releases.llvm.org/${LLVM_VERSION}/${LLVM_RELEASE}.tar.xz"
         tar Jxf "${LLVM_RELEASE}.tar.xz"
         mv "./${LLVM_RELEASE}" /opt/llvm
