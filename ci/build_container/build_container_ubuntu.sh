@@ -4,6 +4,27 @@ set -e
 
 ARCH="$(uname -m)"
 
+# Below was taken from https://github.com/jenkinsci/docker-ssh-slave
+
+user=jenkins
+group=jenkins
+uid=10000
+gid=10000
+JENKINS_AGENT_HOME=/home/${user}
+
+JENKINS_AGENT_HOME ${JENKINS_AGENT_HOME}
+JAVA_HOME /usr/lib/jvm/java-1.8.0-openjdk
+PATH $PATH:$JAVA_HOME/bin
+
+groupadd -g ${gid} ${group} && \
+    useradd -d "${JENKINS_AGENT_HOME}" -u "${uid}" -g "${gid}" -m -s /bin/bash "${user}"
+
+# setup sudo
+apt-get update && \
+    apt-get install --no-install-recommends -y sudo && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    echo "jenkins ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
 # Setup basic requirements and install them.
 apt-get update
 export DEBIAN_FRONTEND=noninteractive
