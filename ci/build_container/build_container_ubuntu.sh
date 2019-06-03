@@ -12,9 +12,9 @@ uid=10000
 gid=10000
 JENKINS_AGENT_HOME=/home/${user}
 
-JENKINS_AGENT_HOME ${JENKINS_AGENT_HOME}
-JAVA_HOME /usr/lib/jvm/java-1.8.0-openjdk
-PATH $PATH:$JAVA_HOME/bin
+#JENKINS_AGENT_HOME ${JENKINS_AGENT_HOME}
+#JAVA_HOME /usr/lib/jvm/java-1.8.0-openjdk
+#PATH $PATH:$JAVA_HOME/bin
 
 groupadd -g ${gid} ${group} && \
     useradd -d "${JENKINS_AGENT_HOME}" -u "${uid}" -g "${gid}" -m -s /bin/bash "${user}"
