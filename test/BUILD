@@ -5,6 +5,7 @@ load(
     "envoy_cc_test_library",
     "envoy_package",
 )
+load("//bazel:repositories.bzl", "PPC_SKIP_TARGETS")
 
 envoy_package()
 
@@ -38,6 +39,7 @@ envoy_cc_test_library(
         "//test/test_common:printers_lib",
     ] + select({
         "//bazel:disable_signal_trace": [],
+        "//bazel:linux_ppc": envoy_all_extensions(PPC_SKIP_TARGETS),
         "//conditions:default": ["//source/exe:sigaction_lib"],
     }),
 )
