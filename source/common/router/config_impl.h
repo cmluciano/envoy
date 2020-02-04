@@ -403,7 +403,7 @@ public:
                       bool case_sensitive) const {
     ASSERT(case_sensitive ? absl::StartsWith(path, matched_path)
                           : absl::StartsWithIgnoreCase(path, matched_path));
-    return std::regex_replace(matched_path.data(), pattern_, substitution_);
+    return std::regex_replace(path, pattern_, substitution_);
   }
 
   ~RegexPathRewriter(){};
